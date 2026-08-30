@@ -22,21 +22,25 @@ from gemini_service import GeminiService
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Startup
-    await init_db()
-    print("MongoDB connection initialized successfully for Orbit AI.")
+    try:
+        await init_db()
+        print("[INFO] MongoDB connection initialized successfully for Orbit AI.")
+    except Exception as e:
+        print(f"[WARNING] Database initialization warning: {e}")
     yield
     # Shutdown
-    print("Shutting down Orbit AI server.")
+    print("[INFO] Shutting down Orbit AI server.")
 
 app = FastAPI(title="Orbit AI - Career Guidance Platform API", lifespan=lifespan)
 
-# CORS Configuration
+# Universal CORS Configuration
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
-    allow_credentials=True,
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["*"],
 )
 
 # Pydantic Models
@@ -99,61 +103,82 @@ async def health_check():
 
 @app.post("/api/auth/register", response_model=TokenResponse)
 async def register(request: RegisterRequest):
-    # Check if email already registered
-    existing_user = await UserDB.find_by_email(request.email.lower().strip())
-    if existing_user:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="An account with this email address already exists."
-        )
-    
-    if len(request.password) < 6:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Password must be at least 6 characters long."
-        )
+    try:
+        clean_email = str(request.email).lower().strip()
+        
+        # Check if email already registered
+        existing_user = await UserDB.find_by_email(clean_email)
+        if existing_user:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="An account with this email address already exists."
+            )
+        
+        if len(request.password) < 6:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Password must be at least 6 characters long."
+            )
 
-    # Clean user name
-    clean_name = request.name.strip() if request.name and request.name.strip() else None
+        # Clean user name
+        clean_name = request.name.strip() if request.name and request.name.strip() else None
 
-    # Create new user
-    hashed_password = get_password_hash(request.password)
-    new_user = await UserDB.create_user(request.email.lower().strip(), hashed_password, name=clean_name)
-    
-    # Initialize profile with user's name
-    await ProfileDB.create_profile(new_user["user_id"], name=clean_name)
-    
-    # Generate JWT access token
-    access_token = create_access_token(
-        data={"sub": new_user["email"]},
-        expires_delta=timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
-    )
-    
-    return TokenResponse(
-        access_token=access_token,
-        email=new_user["email"],
-        name=clean_name
-    )
+        # Create new user
+        hashed_password = get_password_hash(request.password)
+        new_user = await UserDB.create_user(clean_email, hashed_password, name=clean_name)
+        
+        # Initialize profile with user's name
+        await ProfileDB.create_profile(new_user["user_id"], name=clean_name)
+        
+        # Generate JWT access token
+        access_token = create_access_token(
+            data={"sub": new_user["email"]},
+            expires_delta=timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+        )
+        
+        return TokenResponse(
+            access_token=access_token,
+            email=new_user["email"],
+            name=clean_name
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"[ERROR] Registration error: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Registration failed: {str(e)}"
+        )
 
 @app.post("/api/auth/login", response_model=TokenResponse)
 async def login(request: LoginRequest):
-    user = await UserDB.find_by_email(request.email.lower().strip())
-    if not user or not verify_password(request.password, user.get("password_hash", "")):
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid email or password. Please check your credentials."
+    try:
+        clean_email = str(request.email).lower().strip()
+        user = await UserDB.find_by_email(clean_email)
+        if not user or not verify_password(request.password, user.get("password_hash", "")):
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid email or password. Please check your credentials."
+            )
+        
+        access_token = create_access_token(
+            data={"sub": user["email"]},
+            expires_delta=timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
         )
-    
-    access_token = create_access_token(
-        data={"sub": user["email"]},
-        expires_delta=timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
-    )
-    
-    return TokenResponse(
-        access_token=access_token,
-        email=user["email"],
-        name=user.get("name")
-    )
+        
+        return TokenResponse(
+            access_token=access_token,
+            email=user["email"],
+            name=user.get("name")
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"[ERROR] Login error: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Login failed: {str(e)}"
+        )
 
 @app.get("/api/profile", response_model=ProfileResponse)
 async def get_profile(current_user: dict = Depends(get_current_user)):

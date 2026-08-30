@@ -8,30 +8,39 @@ from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from database import UserDB
 
-# Workaround for passlib + bcrypt >= 4.0.0 compatibility
-if not hasattr(bcrypt, "__about__"):
-    bcrypt.__about__ = type("about", (), {"__version__": getattr(bcrypt, "__version__", "4.0.0")})
-
-from passlib.context import CryptContext
-
 load_dotenv()
 
 SECRET_KEY = os.getenv("SECRET_KEY", "your-secret-key-change-this-in-production-min-32-chars")
 ALGORITHM = os.getenv("ALGORITHM", "HS256")
-ACCESS_TOKEN_EXPIRE_MINUTES = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", "10080"))
 
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+try:
+    ACCESS_TOKEN_EXPIRE_MINUTES = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", "10080"))
+except Exception:
+    ACCESS_TOKEN_EXPIRE_MINUTES = 10080
+
 security = HTTPBearer()
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:
     try:
-        return pwd_context.verify(plain_password, hashed_password)
-    except Exception:
+        if isinstance(plain_password, str):
+            plain_bytes = plain_password[:72].encode("utf-8")
+        else:
+            plain_bytes = plain_password
+            
+        if isinstance(hashed_password, str):
+            hashed_bytes = hashed_password.encode("utf-8")
+        else:
+            hashed_bytes = hashed_password
+            
+        return bcrypt.checkpw(plain_bytes, hashed_bytes)
+    except Exception as e:
+        print(f"[ERROR] verify_password error: {e}")
         return False
 
 def get_password_hash(password: str) -> str:
-    truncated_password = password[:72]
-    return pwd_context.hash(truncated_password)
+    pwd_bytes = password[:72].encode("utf-8")
+    salt = bcrypt.gensalt()
+    return bcrypt.hashpw(pwd_bytes, salt).decode("utf-8")
 
 def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -> str:
     to_encode = data.copy()
